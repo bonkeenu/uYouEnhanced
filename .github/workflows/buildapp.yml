@@ -1,5 +1,6 @@
-# Original idea by @ISnackable. Thanks to him for handling the hardest parts!
-# https://github.com/ISnackable/YTCubePlus/blob/main/.github/workflows/Build.yml
+
+# Based on the original uYouEnhanced workflow.
+# Custom icon + SideStore-compatible IPA build.
 
 name: Build and Release uYouEnhanced
 
@@ -7,55 +8,64 @@ on:
   workflow_dispatch:
     inputs:
       build_ffmpeg:
-        description: "Build FFmpegKit from source (cached; first run takes 30-90 min usually.)"
+        description: "Build FFmpegKit from source"
         default: true
         required: false
         type: boolean
+
       sdk_version:
         description: "iOS SDK Version"
         default: "26.5"
         required: true
         type: string
+
       uyou_version:
         description: "uYou Version"
-        default: "3.0.4"
+        default: "3.0.5"
         required: true
         type: string
+
       decrypted_youtube_url:
-        description: "Direct URL of the decrypted YouTube IPA"
-        default: ""
+        description: "Direct URL of decrypted YouTube IPA"
         required: true
         type: string
+
       bundle_id:
         description: "Modify the bundle ID"
-        default: "com.google.ios.youtube"
+        default: "com.bonkeenu.youtubeenhanced"
         required: true
         type: string
+
       app_name:
         description: "Modify the app name"
-        default: "YouTube"
+        default: "YouTube Enhanced"
         required: true
         type: string
+
       commit_id:
         description: "(Optional) Commit ID to build at"
         default: ""
         required: false
         type: string
+
       upload_artifact:
         description: "Upload IPA as artifact"
         default: false
         required: false
         type: boolean
+
       create_release:
         description: "Create a draft release"
         default: true
         required: false
         type: boolean
+
       ytuhd:
         description: "Include YTUHD"
         default: false
         required: false
         type: boolean
+
       sponsorblock:
         description: "Include iSponsorBlock"
         default: false
@@ -70,6 +80,7 @@ jobs:
   build:
     name: Build uYouEnhanced
     runs-on: macos-latest
+
     permissions:
       contents: write
 
@@ -78,7 +89,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: main
-          ref: ${{ github.event.inputs.commit_id || github.ref }}
+          ref: ${{ inputs.commit_id || github.ref }}
           submodules: recursive
 
       - name: Install Dependencies
@@ -86,7 +97,8 @@ jobs:
           brew install ldid dpkg make wget unzip jq pipx meson ninja gnu-sed autoconf automake libtool pkgconf pngquant
 
       - name: Set PATH
-        run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
+        run: |
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Setup Theos
         uses: actions/checkout@v7
@@ -106,11 +118,13 @@ jobs:
       - name: Download iOS SDK
         if: steps.SDK.outputs.cache-hit != 'true'
         run: |
-          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/aricloverALT/sdks/ sdks
+          git clone --quiet -n --depth=1 --filter=tree:0 \
+            https://github.com/aricloverALT/sdks/ sdks
           cd sdks
-          git sparse-checkout set --no-cone iPhoneOS${{ inputs.sdk_version }}.sdk
+          git sparse-checkout set --no-cone \
+            iPhoneOS${{ inputs.sdk_version }}.sdk
           git checkout --quiet
-          mv *.sdk $THEOS/sdks
+          mv *.sdk "$THEOS/sdks"
         env:
           THEOS: ${{ github.workspace }}/theos
 
@@ -128,43 +142,76 @@ jobs:
 
       - name: Fix Theos broken pipe issue
         run: |
-          find $THEOS -name "*.sh" -type f | while read -r SCRIPT; do
+          find "$THEOS" -name "*.sh" -type f | while read -r SCRIPT; do
             if grep -q '| head' "$SCRIPT" 2>/dev/null; then
               sed -i '' 's/| head/2>\/dev\/null | head/g' "$SCRIPT" 2>/dev/null || true
               echo "Patched: $SCRIPT"
             fi
           done
-          find $THEOS -name "*.mk" -type f | while read -r MK; do
+
+          find "$THEOS" -name "*.mk" -type f | while read -r MK; do
             if grep -q '| head' "$MK" 2>/dev/null; then
               sed -i '' 's/| head/2>\/dev\/null | head/g' "$MK" 2>/dev/null || true
               echo "Patched: $MK"
             fi
           done
-          echo "Broken pipe fixes applied"
+        env:
+          THEOS: ${{ github.workspace }}/theos
 
       - name: Install cyan and tbd
         run: |
           pipx install https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
-          wget --quiet "https://github.com/inoahdev/tbd/releases/download/2.2/tbd-mac" -O /usr/local/bin/tbd
+          pipx inject cyan Pillow
+          wget --quiet \
+            "https://github.com/inoahdev/tbd/releases/download/2.2/tbd-mac" \
+            -O /usr/local/bin/tbd
           chmod +x /usr/local/bin/tbd
+
+      - name: Validate Custom Icon
+        run: |
+          set -euo pipefail
+
+          ICON="main/custom-icon.png"
+          test -f "$ICON" || {
+            echo "::error::custom-icon.png not found in repository root"
+            exit 1
+          }
+
+          python3 -m pip --version >/dev/null
+
+          sips -g pixelWidth -g pixelHeight "$ICON"
+
+          WIDTH="$(sips -g pixelWidth "$ICON" | awk '/pixelWidth/{print $2}')"
+          HEIGHT="$(sips -g pixelHeight "$ICON" | awk '/pixelHeight/{print $2}')"
+
+          if [ "$WIDTH" != "1024" ] || [ "$HEIGHT" != "1024" ]; then
+            echo "::error::custom-icon.png must be 1024x1024"
+            exit 1
+          fi
+
+          echo "Custom icon validated: $ICON"
 
       - name: Hash YT ipa url
         run: |
-          URL_YT="$(jq -r '.inputs.decrypted_youtube_url' $GITHUB_EVENT_PATH)"
-          echo ::add-mask::$URL_YT
-          echo URL_YT=$URL_YT >> $GITHUB_ENV
+          URL_YT="$(jq -r '.inputs.decrypted_youtube_url' "$GITHUB_EVENT_PATH")"
+          echo "::add-mask::$URL_YT"
+          echo "URL_YT=$URL_YT" >> "$GITHUB_ENV"
 
       - name: Prepare YouTube iPA
         id: prepare_youtube
         run: |
+          set -euo pipefail
+
           wget "$YOUTUBE_URL" --quiet -O main/YouTube.ipa
+
           cd main
           mv YouTube.ipa YouTube.zip
           unzip -q YouTube.zip
-          youtube_version=$(defaults read "$(pwd)/Payload/YouTube.app/Info" CFBundleVersion)
-          echo "YT_VERSION=$youtube_version" >> $GITHUB_ENV
-          echo "youtube_version=${youtube_version}" >> $GITHUB_OUTPUT
 
+          youtube_version="$(defaults read "$(pwd)/Payload/YouTube.app/Info" CFBundleVersion)"
+
+          echo "YT_VERSION=$youtube_version" >> "$GITHUB_ENV"
+          echo "youtube_version=$youtube_version" >> "$GITHUB_OUTPUT"
         env:
           YOUTUBE_URL: ${{ env.URL_YT }}
 
@@ -188,156 +235,257 @@ jobs:
           path: main/modules/ffmpeg
           key: ${{ steps.ffmpeg_cache.outputs.cache-primary-key }}
 
-      - name: Fix compiling & Build Package
+      - name: Fix compiling and Build Package
         id: build_package
         run: |
+          set -euo pipefail
           cd main
-          sed -i '' "s/^BUNDLE_ID .*/BUNDLE_ID = ${{ inputs.bundle_id }}/" Makefile || echo "BUNDLE_ID = ${{ inputs.bundle_id }}" >> Makefile
-          sed -i '' "s/^DISPLAY_NAME .*/DISPLAY_NAME = ${{ inputs.app_name }}/" Makefile || echo "DISPLAY_NAME = ${{ inputs.app_name }}" >> Makefile
-          sed -i '' "s/^export TARGET .*/export TARGET = iphone:clang:${{ inputs.sdk_version }}:15.0/" Makefile || echo "export TARGET = iphone:clang:${{ inputs.sdk_version }}:15.0" >> Makefile
-          make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1 YTUHD_ENABLED=${{ inputs.ytuhd && '1' || '0' }} SPONSORBLOCK_ENABLED=${{ inputs.sponsorblock && '1' || '0' }}
-          echo "package=$(ls -t packages | head -n1)" >> $GITHUB_OUTPUT
 
+          sed -i '' "s/^BUNDLE_ID .*/BUNDLE_ID = ${{ inputs.bundle_id }}/" Makefile
+          sed -i '' "s/^DISPLAY_NAME .*/DISPLAY_NAME = ${{ inputs.app_name }}/" Makefile
+          sed -i '' "s/^export TARGET .*/export TARGET = iphone:clang:${{ inputs.sdk_version }}:15.0/" Makefile
+
+          make package \
+            THEOS_PACKAGE_SCHEME=rootless \
+            IPA=Payload/YouTube.app \
+            FINALPACKAGE=1 \
+            YTUHD_ENABLED=${{ inputs.ytuhd && '1' || '0' }} \
+            SPONSORBLOCK_ENABLED=${{ inputs.sponsorblock && '1' || '0' }}
+
+          echo "package=$(ls -t packages/*.ipa | head -n1 | xargs basename)" >> "$GITHUB_OUTPUT"
         env:
           THEOS: ${{ github.workspace }}/theos
           UYOU_VERSION: ${{ inputs.uyou_version }}
 
-      - name: Clone Open in YouTube (Safari Extension)
+      - name: Inject Tweaks and Apply Custom Icon
         run: |
-          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/BillyCurtis/OpenYouTubeSafariExtension.git OpenYouTubeSafariExtension
-          cd OpenYouTubeSafariExtension
-          git sparse-checkout set --no-cone OpenYouTubeSafariExtension.appex
-          git checkout --quiet
-          mv *.appex ..
+          set -euo pipefail
 
-      - name: Inject Tweaks Into IPA
-        run: |
           IPA_IN="main/packages/${{ steps.build_package.outputs.package }}"
           OUTNAME="uYouEnhanced_${{ env.YT_VERSION }}_v${{ inputs.uyou_version }}.ipa"
-          tweaks="OpenYouTubeSafariExtension.appex"
-          for f in main/packages/*.deb; do
-            [ -f "$f" ] && tweaks="$tweaks $f"
-          done
-          cyan -i "$IPA_IN" -o "$OUTNAME" -uwef $tweaks -n "${{ inputs.app_name }}" -b ${{ inputs.bundle_id }}
 
-      - name: Strip Unresignable Extensions From Final IPA
+          tweaks=()
+          for f in main/packages/*.deb; do
+            [ -f "$f" ] && tweaks+=("$f")
+          done
+
+          # -k: custom icon
+          # -e: remove app extensions
+          # -u: remove UISupportedDevices
+          # -w: remove watch app
+          # -f: inject tweak packages
+
+          cyan \
+            -i "$IPA_IN" \
+            -o "$OUTNAME" \
+            -k main/custom-icon.png \
+            -u \
+            -w \
+            -e \
+            -n "${{ inputs.app_name }}" \
+            -b "${{ inputs.bundle_id }}" \
+            -f "${tweaks[@]}"
+
+      - name: Strip Extensions From Final IPA
         id: strip_ipa
+        shell: bash
         run: |
           set -euo pipefail
 
           OUTNAME="uYouEnhanced_${{ env.YT_VERSION }}_v${{ inputs.uyou_version }}.ipa"
-          if [ ! -f "$OUTNAME" ]; then
-            OUTNAME="$(basename "$(find . -maxdepth 3 -name 'uYouEnhanced_*.ipa' -print -quit)")"
-          fi
-          echo "Final IPA: $OUTNAME"
 
-          echo "--- .appex bundles contained in final IPA ---"
-          unzip -Z1 "$OUTNAME" | grep '\.appex/' | sed 's|^\(.*\.appex\)/.*|\1|' | sort -u | tee appex_list.txt || true
+          export OUTNAME
 
-          BAD="$(grep -v '/PlugIns/' appex_list.txt || true)"
-          if [ -n "$BAD" ]; then
-            echo "Removing unresignable extensions:"
-            printf '%s\n' "$BAD"
-            printf '%s\n' "$BAD" | while IFS= read -r d; do
-              zip -q -d "$OUTNAME" "${d}/*" || true
-            done
-          else
-            echo "All extensions are under PlugIns/ - OK for SideStore."
-          fi
-          SC_INFO_MATCHES="$(unzip -Z1 "$OUTNAME" | grep '/SC_Info/' || true)"
-          if [ -n "$SC_INFO_MATCHES" ]; then
-            echo "Removing files under SC_Info/ - OK for AltStore.:"
-            printf '%s\n' "$SC_INFO_MATCHES"
-            zip -q -d "$OUTNAME" "Payload/*/SC_Info/*" "Payload/*/SC_Info" || true
-          fi
+          python3 <<'PY'
+          import os
+          import tempfile
+          import zipfile
+
+          source = os.environ["OUTNAME"]
+          directory = os.path.dirname(os.path.abspath(source))
+
+          fd, temporary = tempfile.mkstemp(
+              prefix="uyou-clean-",
+              suffix=".ipa",
+              dir=directory
+          )
+          os.close(fd)
+
+          removed = []
+
+          try:
+              with zipfile.ZipFile(source, "r") as src:
+                  with zipfile.ZipFile(temporary, "w") as dst:
+                      for info in src.infolist():
+                          name = info.filename
+                          parts = name.split("/")
+
+                          is_extension = any(
+                              part.endswith(".appex")
+                              for part in parts
+                          )
+
+                          is_plugin = "PlugIns" in parts
+
+                          is_sc_info = "SC_Info" in parts
+
+                          if is_extension or is_plugin or is_sc_info:
+                              removed.append(name)
+                              continue
+
+                          dst.writestr(info, src.read(info.filename))
+
+              os.replace(temporary, source)
+
+          finally:
+              if os.path.exists(temporary):
+                  os.remove(temporary)
+
+          print(f"Removed {len(removed)} extension/SC_Info entries")
+          for name in removed[:30]:
+              print(f"Removed: {name}")
+          PY
+
           mkdir -p main/packages
           cp -f "$OUTNAME" "main/packages/$OUTNAME"
-          find main/packages -maxdepth 1 -name "*.ipa" ! -name "$OUTNAME" -delete || true
-          echo "Final SideStore-compatible IPA: main/packages/$OUTNAME"
+
           echo "final_ipa=$OUTNAME" >> "$GITHUB_OUTPUT"
 
       - name: Register Alternate App Icons
         run: |
           set -euo pipefail
+
           IPA="main/packages/${{ steps.strip_ipa.outputs.final_ipa }}"
-          rm -rf iconwork && mkdir -p iconwork/icons && cd iconwork
+          rm -rf iconwork
+          mkdir -p iconwork/icons
+          cd iconwork
+
           unzip -q "../$IPA" "Payload/YouTube.app/Info.plist"
+
           PLIST="Payload/YouTube.app/Info.plist"
           RAW_ICON_SRC="../main/Localizations/uYouPlus.bundle/AppIcons"
           ICON_SRC="icons"
-          for f in "$RAW_ICON_SRC"/*.png; do
-            name="$(basename "$f")"
-            pngquant --quality=80-95 --strip --skip-if-larger "$f" --output "$ICON_SRC/$name" >/dev/null 2>&1 || true
-            [ -f "$ICON_SRC/$name" ] || cp -f "$f" "$ICON_SRC/$name"
-          done
-          PB=/usr/libexec/PlistBuddy
-          BADICONS=0
-          for f in "$ICON_SRC"/*.png; do
-            SPEC="$(sips -g pixelWidth -g pixelHeight -g hasAlpha "$f" 2>/dev/null | awk '/pixelWidth/{w=$2} /pixelHeight/{h=$2} /hasAlpha/{a=$2} END{print w"x"h" alpha="a}')"
-            case "$SPEC" in
-              "1024x1024 alpha=no"*) ;;
-              *) echo "::warning::$(basename "$f") is $SPEC"; BADICONS=1 ;;
-            esac
-          done
-          if [ "$BADICONS" != 0 ]; then
-            echo "::error::app icons must be 1024x1024 opaque PNGs or iOS rejects them with OSStatus -54"
-            exit 1
+
+          if [ -d "$RAW_ICON_SRC" ]; then
+            for f in "$RAW_ICON_SRC"/*.png; do
+              [ -f "$f" ] || continue
+
+              name="$(basename "$f")"
+
+              pngquant --quality=80-95 --strip --skip-if-larger \
+                "$f" --output "$ICON_SRC/$name" >/dev/null 2>&1 || true
+
+              [ -f "$ICON_SRC/$name" ] || cp -f "$f" "$ICON_SRC/$name"
+            done
           fi
-          # Create intermediate dicts FIRST (PlistBuddy cannot nest-create).
+
+          PB=/usr/libexec/PlistBuddy
+
           for ROOT in CFBundleIcons "CFBundleIcons~ipad"; do
             $PB -c "Add :$ROOT dict" "$PLIST" 2>/dev/null || true
             $PB -c "Add :$ROOT:CFBundleAlternateIcons dict" "$PLIST" 2>/dev/null || true
           done
+
           for f in "$ICON_SRC"/*.png; do
+            [ -f "$f" ] || continue
+
             NAME="$(basename "$f" .png)"
+
             cp -f "$f" "Payload/YouTube.app/$NAME.png"
+
             for ROOT in CFBundleIcons "CFBundleIcons~ipad"; do
               $PB -c "Add :$ROOT:CFBundleAlternateIcons:$NAME dict" "$PLIST" 2>/dev/null || true
               $PB -c "Add :$ROOT:CFBundleAlternateIcons:$NAME:CFBundleIconFiles array" "$PLIST" 2>/dev/null || true
               $PB -c "Add :$ROOT:CFBundleAlternateIcons:$NAME:CFBundleIconFiles:0 string $NAME" "$PLIST" 2>/dev/null || true
             done
+
             echo "Registered alternate icon: $NAME"
           done
-          $PB -c "Print :CFBundleIcons:CFBundleAlternateIcons" "$PLIST" | head -20
-          zip -q "../$IPA" "$PLIST" Payload/YouTube.app/*.png
-          cd .. && rm -rf iconwork
-          echo "Alternate icons registered into $(basename "$IPA")"
 
-      - name: Rebrand IPA Filename (3.0.4 -> 3.0.5)
+          if compgen -G "Payload/YouTube.app/*.png" >/dev/null; then
+            zip -q "../$IPA" "$PLIST" Payload/YouTube.app/*.png
+          else
+            zip -q "../$IPA" "$PLIST"
+          fi
+
+          cd ..
+          rm -rf iconwork
+
+      - name: Validate Final IPA
         run: |
           set -euo pipefail
-          cd main/packages
-          OLD="${{ steps.strip_ipa.outputs.final_ipa }}"
-          NEW="${OLD//3.0.4/3.0.5}"
-          if [ "$OLD" != "$NEW" ] && [ -f "$OLD" ]; then
-            mv "$OLD" "$NEW"
-            echo "Renamed: $OLD -> $NEW"
-          else
-            echo "No 3.0.4 in filename or file missing: $OLD"
-          fi
-          echo "RENAMED_IPA=$NEW" >> "$GITHUB_ENV"
+
+          IPA="main/packages/${{ steps.strip_ipa.outputs.final_ipa }}"
+
+          export IPA
+          export EXPECTED_BUNDLE_ID="${{ inputs.bundle_id }}"
+
+          python3 <<'PY'
+          import os
+          import plistlib
+          import zipfile
+
+          path = os.environ["IPA"]
+          expected = os.environ["EXPECTED_BUNDLE_ID"]
+
+          with zipfile.ZipFile(path) as archive:
+              names = archive.namelist()
+
+              plist_paths = [
+                  name for name in names
+                  if name.startswith("Payload/")
+                  and name.count("/") == 2
+                  and name.endswith(".app/Info.plist")
+              ]
+
+              if not plist_paths:
+                  plist_paths = [
+                      name for name in names
+                      if name.startswith("Payload/")
+                      and name.endswith(".app/Info.plist")
+                  ]
+
+              if not plist_paths:
+                  raise SystemExit("ERROR: Main app Info.plist missing")
+
+              info = plistlib.loads(archive.read(plist_paths[0]))
+              actual = info.get("CFBundleIdentifier")
+
+              if actual != expected:
+                  raise SystemExit(
+                      f"Bundle ID mismatch: {actual} != {expected}"
+                  )
+
+              extensions = [
+                  name for name in names
+                  if ".appex/" in name or "/PlugIns/" in name
+              ]
+
+              if extensions:
+                  raise SystemExit(
+                      f"ERROR: {len(extensions)} extension files remain"
+                  )
+
+              print("Bundle ID OK:", actual)
+              print("Extensions: none")
+              print("IPA structure: OK")
+          PY
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifact }}
         uses: actions/upload-artifact@v7
-        env:
-          UYOU_VERSION: ${{ inputs.uyou_version }}
-          YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
         with:
-          name: uYouEnhanced_${{ env.YOUTUBE_VERSION }}_${{ env.UYOU_VERSION }}
-          path: ${{ github.workspace }}/main/packages/${{ env.RENAMED_IPA || steps.strip_ipa.outputs.final_ipa }}
+          name: uYouEnhanced_${{ env.YT_VERSION }}_${{ inputs.uyou_version }}
+          path: main/packages/${{ steps.strip_ipa.outputs.final_ipa }}
           if-no-files-found: error
 
       - name: Create Release
         if: ${{ inputs.create_release }}
-        id: create_release
         uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UYOU_VERSION: ${{ inputs.uyou_version }}
-          YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
         with:
-          tag_name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
-          name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
-          files: main/packages/*.ipa
+          tag_name: v${{ env.YT_VERSION }}-${{ inputs.uyou_version }}-(${{ github.run_number }})
+          name: v${{ env.YT_VERSION }}-${{ inputs.uyou_version }}-(${{ github.run_number }})
+          files: main/packages/${{ steps.strip_ipa.outputs.final_ipa }}
           draft: true
