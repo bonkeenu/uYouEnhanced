@@ -257,6 +257,7 @@ jobs:
           THEOS: ${{ github.workspace }}/theos
           UYOU_VERSION: ${{ inputs.uyou_version }}
 
+
       - name: Inject Tweaks and Apply Custom Icon
         run: |
           set -euo pipefail
@@ -269,22 +270,24 @@ jobs:
             [ -f "$f" ] && tweaks+=("$f")
           done
 
-          # -k: custom icon
-          # -e: remove app extensions
-          # -u: remove UISupportedDevices
-          # -w: remove watch app
-          # -f: inject tweak packages
-
-          cyan \
-            -i "$IPA_IN" \
-            -o "$OUTNAME" \
-            -k main/custom-icon.png \
-            -u \
-            -w \
-            -e \
-            -n "${{ inputs.app_name }}" \
-            -b "${{ inputs.bundle_id }}" \
-            -f "${tweaks[@]}"
+          if [ ${#tweaks[@]} -gt 0 ]; then
+            cyan \
+              -i "$IPA_IN" \
+              -o "$OUTNAME" \
+              -k main/custom-icon.png \
+              -u -w -e \
+              -n "${{ inputs.app_name }}" \
+              -b "${{ inputs.bundle_id }}" \
+              -f "${tweaks[@]}"
+          else
+            cyan \
+              -i "$IPA_IN" \
+              -o "$OUTNAME" \
+              -k main/custom-icon.png \
+              -u -w -e \
+              -n "${{ inputs.app_name }}" \
+              -b "${{ inputs.bundle_id }}"
+          fi
 
       - name: Strip Extensions From Final IPA
         id: strip_ipa
